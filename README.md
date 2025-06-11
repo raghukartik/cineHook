@@ -18,7 +18,7 @@
 
 ## 📸 Demo
 
-*(Optional: Add your deployed URL here)*  
+*https://cine-hook.vercel.app/*  
 [Live Demo](#)
 
 ---
