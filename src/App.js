@@ -27,7 +27,7 @@ export default function App() {
       const collected = [];
 
       for (const movie of watchedList) {
-        const res = await fetch("http://localhost:5000/api/suggest", {
+        const res = await fetch(`${process.env.REACT_APP_API_KEY}/api/suggest`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ title: movie.title }),
