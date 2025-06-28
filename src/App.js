@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import StarRating from "./StarRating";
 import { useMovies } from "./useMovies";
 import { useLocalStorageState } from "./useLocalStorageState";
@@ -15,7 +15,86 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const { movies, isLoading, error } = useMovies(query);
   const [watched, setWatched] = useLocalStorageState([], "watched");
+  const [suggestedMovies, setSuggestedMovies] = useState([]);
+  const [enrichedSuggestions, setEnrichedSuggestions] = useState([]);
+  const [isFetchingSuggestions, setIsFetchingSuggestions] = useState(false);
 
+  // console.log(watched);
+
+  async function fetchAllRecommendations(watchedList) {
+    try {
+      setIsFetchingSuggestions(true)
+      const collected = [];
+
+      for (const movie of watchedList) {
+        const res = await fetch("http://localhost:5000/api/suggest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: movie.title }),
+        });
+
+        if (!res.ok) throw new Error("Failed to fetch recommendations");
+
+        const recommendations = await res.json();
+
+        for (const rec of recommendations || []) {
+          const alreadyExists = collected.some(
+            (m) => m.name === rec.name // lowercase key for consistency
+          );
+          if (!alreadyExists) collected.push(rec);
+        }
+      }
+      const watchedTitles = new Set(watchedList.map((m) => m.title.toLowerCase()));
+      const filteredSuggestions = collected.filter(
+        (movie) => !watchedTitles.has(movie.name.toLowerCase())
+      );
+      setSuggestedMovies(filteredSuggestions);
+    } catch (err) {
+      console.error("Recommendation fetch error:", err);
+    } finally {
+      setIsFetchingSuggestions(false);
+    }
+  }
+
+  useEffect(() => {
+    if (watched.length > 0) fetchAllRecommendations(watched);
+  }, [watched]);
+
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function enrichSuggestions() {
+      const enriched = [];
+
+      for (const movie of suggestedMovies) {
+        try {
+          const res = await fetch(
+            `https://www.omdbapi.com/?apikey=${KEY}&t=${encodeURIComponent(movie.name)}`, { signal: controller.signal });
+          const data = await res.json();
+
+          if (data.Response === "True") {
+            enriched.push(data); // includes Title, Year, imdbRating, etc.
+          }
+        } catch (err) {
+          console.error("OMDB enrichment error:", err);
+        }
+      }
+
+      setEnrichedSuggestions(enriched); // your new state
+    }
+
+    if (suggestedMovies.length > 0) {
+      enrichSuggestions();
+    }
+  }, [suggestedMovies]);
+
+  const sortedSuggestions = useMemo(() => {
+    return [...enrichedSuggestions].sort((a, b) => {
+      const ratingA = parseFloat(a.imdbRating) || 0;
+      const ratingB = parseFloat(b.imdbRating) || 0;
+      return ratingB - ratingA;
+    });
+  }, [enrichedSuggestions]);
 
   function handleSelectedMovie(id) {
     setSelectedId((selectedId) => (id === selectedId ? null : id));
@@ -26,7 +105,9 @@ export default function App() {
   }
 
   function handleAddWatched(movie) {
-    setWatched((watched) => [...watched, movie]);
+    const updatedWatched = [...watched, movie];
+    setWatched(updatedWatched);
+    fetchAllRecommendations(updatedWatched);
   }
 
   function handleDeleteWatched(id) {
@@ -57,12 +138,19 @@ export default function App() {
               onAddWatched={handleAddWatched}
               watched={watched}
             />
+          ) : isFetchingSuggestions ? (
+            <Loader />
           ) : (
             <>
               <WatchedSummary watched={watched} />
               <WatchedMoviesList
                 watched={watched}
                 onDeleteWatched={handleDeleteWatched}
+              />
+              <SuggestSummary suggest={sortedSuggestions} />
+              <SuggestedMoviesList
+                suggestions={sortedSuggestions}
+                onSelectMovie={handleSelectedMovie}
               />
             </>
           )}
@@ -79,10 +167,11 @@ function ErrorMessage({ message }) {
 function Loader() {
   return (
     <div>
-      <p className="loader">Loading...</p>
+      <p className="loader">Updating please wait...</p>
     </div>
   );
 }
+
 function NavBar({ children }) {
   return (
     <nav className="nav-bar">
@@ -115,7 +204,7 @@ function Search({ query, setQuery }) {
     inputEl.current.focus();
     setQuery("");
   });
-  
+
   return (
     <input
       className="search"
@@ -188,7 +277,7 @@ function WatchedMovie({ movie, onDeleteWatched }) {
   return (
     <li>
       <img src={movie.poster} alt={`${movie.title} poster`} />
-      <h3>{movie.Title}</h3>
+      <h3>{movie.title}</h3>
       <div>
         <p>
           <span>⭐️</span>
@@ -208,6 +297,39 @@ function WatchedMovie({ movie, onDeleteWatched }) {
         ></button>
       </div>
     </li>
+  );
+}
+
+function SuggestMovie({ movie, onSelectMovie }) {
+  return (
+    <li onClick={() => onSelectMovie(movie.imdbID)}>
+      <img src={movie.Poster} alt={`${movie.title} poster`} />
+      <h3>{movie.Title}</h3>
+      <div>
+        <p>
+          <span>⭐️</span>
+          <span>{movie.imdbRating}</span>
+        </p>
+        <p>
+          <span>⏳</span>
+          <span>{movie.Runtime} min</span>
+        </p>
+      </div>
+    </li>
+  );
+}
+
+function SuggestedMoviesList({ suggestions, onSelectMovie }) {
+  return (
+    <ul className="list">
+      {suggestions.map((movie) => (
+        <SuggestMovie
+          movie={movie}
+          key={movie.imdbID}
+          onSelectMovie={onSelectMovie}
+        />
+      ))}
+    </ul>
   );
 }
 
@@ -342,10 +464,20 @@ function MovieDetails({ selectedId, onCloseMovie, onAddWatched, watched }) {
   );
 }
 
+function SuggestSummary({ suggest }) {
+  const avgImdbRating = average(suggest.map((movie) => movie.imdbRating));
+  const avgRuntime = average(suggest.map((movie) => movie.Runtime));
+  return (
+    <div className="summary">
+      <h2>Movies You may Like</h2>
+    </div>
+  );
+}
+
 function WatchedSummary({ watched }) {
   const avgImdbRating = average(watched.map((movie) => movie.imdbRating));
   const avgUserRating = average(watched.map((movie) => movie.userRating));
-  const avgRuntime = average(watched.map((movie) => movie.runtime));
+  const avgRuntime = average(watched.map((movie) => movie.runtime)).toFixed(2);
   return (
     <div className="summary">
       <h2>Movies you watched</h2>
